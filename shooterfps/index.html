@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AK47 Shooting Game</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        font-family: "Inter", sans-serif;
+        background-color: #222;
+      }
+      canvas {
+        display: block;
+      }
+      #overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        font-size: 2em;
+        text-align: center;
+        flex-direction: column;
+        cursor: pointer;
+        z-index: 1000;
+      }
+      #message-box {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 20px 40px;
+        border-radius: 10px;
+        text-align: center;
+        font-size: 1.5em;
+        display: none; /* Hidden by default */
+        z-index: 1001;
+        box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+        border: 2px solid limegreen;
+      }
+      #hud {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        color: white;
+        font-size: 1.2em;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 5px 10px;
+        border-radius: 5px;
+        display: none; /* Hidden until game starts */
+      }
+      #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 10px;
+        height: 10px;
+        border: 1px solid white;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 999;
+        display: none; /* Hidden until game starts */
+        box-shadow: 0 0 5px rgba(255, 255, 255, 0.7);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay">
+      <p>Click to Play</p>
+      <p style="font-size: 0.6em">Use WASD to move, Mouse to look, Left Click to Shoot, Space to Jump</p>
+    </div>
+    <div id="message-box"></div>
+    <div id="hud">Enemies Remaining: <span id="enemies-count">50</span></div>
+    <div id="crosshair"></div>
+
+    <script>
+      // LƯU Ý QUAN TRỌNG KHI CHẠY TRÊN VS CODE:
+      // Các tính năng như Pointer Lock (được sử dụng để khóa con trỏ chuột trong trò chơi)
+      // thường yêu cầu tệp HTML phải được phục vụ qua một máy chủ web (ví dụ: http://localhost)
+      // thay vì mở trực tiếp từ hệ thống tệp của bạn (file:///...).
+      // Nếu bạn gặp lỗi khi nhấp để bắt đầu trò chơi trong VS Code, hãy thử một trong các cách sau:
+      //
+      // CÁCH 1 (Đơn giản nhất, nếu bạn đã cài đặt Python):
+      // 1. Mở Terminal trong VS Code (Ctrl+`).
+      // 2. Điều hướng đến thư mục chứa tệp HTML này.
+      // 3. Chạy lệnh sau: `python -m http.server`
+      // 4. Mở trình duyệt và truy cập: `http://localhost:8000` (hoặc cổng khác nếu báo).
+      //
+      // CÁCH 2 (Nếu bạn có Node.js):
+      // 1. Cài đặt `serve` global: `npm install -g serve`
+      // 2. Điều hướng đến thư mục chứa tệp HTML này trong Terminal.
+      // 3. Chạy lệnh: `serve`
+      // 4. Mở trình duyệt và truy cập địa chỉ được cung cấp (thường là `http://localhost:3000`).
+      //
+      // CÁCH 3 (Sử dụng extension trong VS Code):
+      // Cài đặt extension "Live Server" của Ritwick Dey. Sau đó nhấp chuột phải vào tệp HTML
+      // và chọn "Open with Live Server".
+
+      // Global variables for the Three.js scene, camera, renderer, and game objects
+      let scene, camera, renderer;
+      let controls; // PointerLockControls for first-person camera look
+      let gun; // The AK47 model
+      let enemies = []; // Array to hold enemy meshes
+      let obstacles = []; // Array to hold obstacle meshes
+      let groundRaycaster; // Used for detecting ground collision (gravity/jumping)
+      let shootRaycaster; // Used for detecting hits when shooting
+      let enemiesToShoot = 50; // Counter for remaining enemies
+      let isGameActive = false; // Flag to control game state
+
+      // Movement variables
+      let moveForward = false;
+      let moveBackward = false;
+      let moveLeft = false;
+      let moveRight = false;
+      let canJump = false; // Flag to check if player can jump
+      let velocity = new THREE.Vector3(); // Player's current velocity
+      const moveSpeed = 5.75; // Player movement speed in m/s
+      const jumpHeight = 10; // Initial upward velocity for jump
+      const gravity = -9.8 * 10; // Gravity strength (multiplied for faster fall)
+      let prevTime = performance.now(); // For delta time calculation
+
+      const overlay = document.getElementById("overlay");
+      const messageBox = document.getElementById("message-box");
+      const enemiesCountSpan = document.getElementById("enemies-count");
+      const hud = document.getElementById("hud");
+      const crosshair = document.getElementById("crosshair");
+
+      // Initialises the Three.js scene, camera, renderer, and game elements
+      function init() {
+        // Scene: The container for all objects, lights, and cameras
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x333333); // Dark background
+
+        // Camera: Defines the player's perspective (Field of View, Aspect Ratio, Near, Far clipping planes)
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.6, 0); // Player height
+
+        // Renderer: Renders the scene onto the canvas
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement); // Add the renderer's canvas to the DOM
+
+        // Lighting: Essential for seeing materials with shading
+        const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Brighter light from a specific direction
+        directionalLight.position.set(5, 10, 7.5);
+        scene.add(directionalLight);
+
+        // Ground: A simple plane for the floor
+        const groundGeometry = new THREE.PlaneGeometry(200, 200); // Larger ground
+        const groundMaterial = new THREE.MeshPhongMaterial({ color: 0x555555, side: THREE.DoubleSide });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2; // Rotate to lie flat
+        ground.position.y = 0; // Ensure ground is at y=0
+        scene.add(ground);
+
+        // Create the AK47 gun model
+        createGun();
+
+        // Create 50 enemies
+        createEnemies(50);
+
+        // Create obstacles
+        createObstacles(20); // Create 20 wooden boxes
+
+        // PointerLockControls: Enables first-person camera movement based on mouse
+        controls = new THREE.PointerLockControls(camera, document.body);
+        scene.add(controls.getObject()); // The controls object contains the camera (yawObject actually)
+
+        // Event listener for locking/unlocking the pointer
+        controls.addEventListener("lock", function () {
+          overlay.style.display = "none"; // Hide instructions when locked
+          hud.style.display = "block"; // Show HUD
+          crosshair.style.display = "block"; // Show crosshair
+          isGameActive = true;
+          prevTime = performance.now(); // Reset time for movement calculation
+        });
+        controls.addEventListener("unlock", function () {
+          overlay.style.display = "flex"; // Show instructions when unlocked
+          hud.style.display = "none"; // Hide HUD
+          crosshair.style.display = "none"; // Hide crosshair
+          isGameActive = false;
+        });
+
+        // Raycaster for ground collision (short range, downwards)
+        groundRaycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, 1.7); // Origin, direction, near, far. Far set slightly more than player height for ground check.
+
+        // Raycaster for shooting (long range, from camera)
+        shootRaycaster = new THREE.Raycaster();
+
+        // Event listener for shooting (mouse click)
+        document.addEventListener("click", onDocumentClick, false);
+
+        // Keyboard input for movement
+        document.addEventListener("keydown", onKeyDown, false);
+        document.addEventListener("keyup", onKeyUp, false);
+
+        // Handle window resizing
+        window.addEventListener("resize", onWindowResize, false);
+
+        animate(); // Start the animation loop
+      }
+
+      /**
+       * Creates a simplified AK47 model using basic Three.js geometries.
+       * The gun is added directly to the camera so it moves with the player's view.
+       * Gun parts are colored with original dark grey/black.
+       */
+      function createGun() {
+        gun = new THREE.Group(); // Use a group to combine multiple parts of the gun
+
+        // Main body
+        const bodyGeometry = new THREE.BoxGeometry(0.1, 0.15, 0.5);
+        const bodyMaterial = new THREE.MeshPhongMaterial({ color: 0x444444 }); // Original dark grey
+        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+        gun.add(body);
+
+        // Barrel
+        const barrelGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.4, 8);
+        const barrelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 }); // Original dark black
+        const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial);
+        barrel.position.set(0, 0.02, -0.3);
+        barrel.rotation.x = Math.PI / 2;
+        gun.add(barrel);
+
+        // Stock
+        const stockGeometry = new THREE.BoxGeometry(0.08, 0.12, 0.2);
+        const stockMaterial = new THREE.MeshPhongMaterial({ color: 0x663300 }); // Wood color for stock
+        const stock = new THREE.Mesh(stockGeometry, stockMaterial);
+        stock.position.set(0, -0.05, 0.25);
+        gun.add(stock);
+
+        // Magazine
+        const magGeometry = new THREE.BoxGeometry(0.06, 0.18, 0.1);
+        const magMaterial = new THREE.MeshPhongMaterial({ color: 0x555555 }); // Original dark grey for magazine
+        const magazine = new THREE.Mesh(magGeometry, magMaterial);
+        magazine.position.set(0, -0.1, -0.05);
+        gun.add(magazine);
+
+        // Position the gun relative to the camera
+        // Adjust these values to make the gun appear correctly in the first-person view
+        gun.position.set(0.2, -0.1, -0.5); // Right, down, slightly in front of camera
+        camera.add(gun); // Add the gun to the camera
+      }
+
+      /**
+       * Creates a specified number of enemy cubes and places them randomly in the scene.
+       * Enemies are colored red.
+       * @param {number} count The number of enemies to create.
+       */
+      function createEnemies(count) {
+        // Clear existing enemies and reset count
+        enemies.forEach((enemy) => scene.remove(enemy)); // Remove existing enemies from scene
+        enemies = [];
+        enemiesToShoot = count;
+        enemiesCountSpan.textContent = enemiesToShoot;
+
+        const enemyMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 }); // Red color for enemies
+
+        for (let i = 0; i < count; i++) {
+          const enemyGeometry = new THREE.BoxGeometry(2, 2, 2);
+          const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
+
+          // Randomly position enemies within a reasonable range, avoiding spawning too close to origin
+          enemy.position.x = Math.random() * 180 - 90; // Expanded range for 50 enemies
+          enemy.position.z = Math.random() * 180 - 90; // Expanded range for 50 enemies
+          // Ensure enemies are not too close to the player's starting position (0,0)
+          if (Math.abs(enemy.position.x) < 10 && Math.abs(enemy.position.z) < 10) {
+            enemy.position.x += 20; // Push further if too close
+            enemy.position.z += 20;
+          }
+          enemy.position.y = 1; // Above the ground
+
+          scene.add(enemy);
+          enemies.push(enemy);
+        }
+      }
+
+      /**
+       * Creates a specified number of wooden box obstacles and places them randomly in the scene.
+       * @param {number} count The number of obstacles to create.
+       */
+      function createObstacles(count) {
+        obstacles.forEach((obstacle) => scene.remove(obstacle)); // Remove existing obstacles from scene
+        obstacles = [];
+
+        const obstacleMaterial = new THREE.MeshPhongMaterial({ color: 0x8b4513 }); // SaddleBrown for wood
+        const obstacleGeometries = [
+          new THREE.BoxGeometry(3, 3, 3), // Large box
+          new THREE.BoxGeometry(2, 4, 2), // Tall box
+          new THREE.BoxGeometry(4, 2, 4), // Wide box
+        ];
+
+        for (let i = 0; i < count; i++) {
+          const geometry = obstacleGeometries[Math.floor(Math.random() * obstacleGeometries.length)];
+          const obstacle = new THREE.Mesh(geometry, obstacleMaterial);
+
+          // Randomly position obstacles, ensuring they are on the ground
+          obstacle.position.x = Math.random() * 100 - 50; // Between -50 and 50
+          obstacle.position.z = Math.random() * 100 - 50; // Between -50 and 50
+          obstacle.position.y = geometry.parameters.height / 2; // Place half height above ground
+
+          scene.add(obstacle);
+          obstacles.push(obstacle);
+        }
+      }
+
+      /**
+       * Handles key down events for movement and jumping.
+       * @param {KeyboardEvent} event The keyboard event.
+       */
+      function onKeyDown(event) {
+        if (!isGameActive) return; // Only process input if game is active
+
+        switch (event.code) {
+          case "KeyW":
+            moveForward = true;
+            break;
+          case "KeyA":
+            moveLeft = true;
+            break;
+          case "KeyS":
+            moveBackward = true;
+            break;
+          case "KeyD":
+            moveRight = true;
+            break;
+          case "Space":
+            if (canJump === true) {
+              velocity.y = jumpHeight; // Apply upward velocity
+              canJump = false; // Cannot jump again until landing
+            }
+            break;
+        }
+      }
+
+      /**
+       * Handles key up events for movement.
+       * @param {KeyboardEvent} event The keyboard event.
+       */
+      function onKeyUp(event) {
+        if (!isGameActive) return; // Only process input if game is active
+
+        switch (event.code) {
+          case "KeyW":
+            moveForward = false;
+            break;
+          case "KeyA":
+            moveLeft = false;
+            break;
+          case "KeyS":
+            moveBackward = false;
+            break;
+          case "KeyD":
+            moveRight = false;
+            break;
+        }
+      }
+
+      /**
+       * Handles the mouse click event for shooting.
+       * When the pointer is locked, it performs a raycast from the camera.
+       * If an enemy is hit, it is removed from the scene and the count is updated.
+       */
+      function onDocumentClick(event) {
+        if (controls.isLocked === true && isGameActive) {
+          // Set the shootRaycaster to shoot from the center of the camera's view
+          // The Vector2(0, 0) represents the center of the screen in normalized device coordinates
+          shootRaycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+          shootRaycaster.far = Infinity; // Set shooting range to infinite
+
+          // Check for intersections with enemy objects
+          const intersects = shootRaycaster.intersectObjects(enemies);
+
+          if (intersects.length > 0) {
+            // An enemy was hit!
+            const hitEnemy = intersects[0].object;
+
+            // Remove the hit enemy from the scene
+            scene.remove(hitEnemy);
+
+            // Remove the hit enemy from the 'enemies' array
+            const index = enemies.indexOf(hitEnemy);
+            if (index > -1) {
+              enemies.splice(index, 1);
+            }
+
+            enemiesToShoot--; // Decrement the count
+            enemiesCountSpan.textContent = enemiesToShoot; // Update HUD
+
+            if (enemiesToShoot === 0) {
+              // All enemies shot, game won!
+              showMessageBox("You Win! All enemies eliminated. Click to restart.");
+              isGameActive = false;
+              controls.unlock(); // Unlock pointer to allow restart click
+            }
+          }
+        } else if (!isGameActive && (event.target.id === "message-box" || event.target.id === "overlay")) {
+          // If game is not active and user clicks on overlay or message box, restart the game
+          messageBox.style.display = "none";
+          controls.lock(); // Lock pointer to start game
+          createEnemies(50); // Reset enemies to 50
+          createObstacles(20); // Reset obstacles
+        }
+      }
+
+      /**
+       * Resizes the renderer and updates the camera's aspect ratio when the window is resized.
+       */
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix(); // Update camera's projection matrix after aspect change
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      /**
+       * The main animation loop.
+       * This function is called repeatedly to render frames and update game logic.
+       */
+      function animate() {
+        requestAnimationFrame(animate); // Request the next frame
+
+        if (isGameActive) {
+          const time = performance.now();
+          const delta = (time - prevTime) / 1000; // Time since last frame in seconds
+
+          // Apply friction to horizontal velocity
+          velocity.x -= velocity.x * 10.0 * delta;
+          velocity.z -= velocity.z * 10.0 * delta;
+
+          // Apply gravity to vertical velocity
+          velocity.y += gravity * delta;
+
+          // Determine movement direction based on key presses
+          // Using Vector3 to add movement relative to camera's orientation
+          if (moveForward) controls.getObject().translateZ(-moveSpeed * delta);
+          if (moveBackward) controls.getObject().translateZ(moveSpeed * delta);
+          if (moveLeft) controls.getObject().translateX(-moveSpeed * delta);
+          if (moveRight) controls.getObject().translateX(moveSpeed * delta);
+
+          // Apply vertical velocity (jump/fall)
+          controls.getObject().position.y += velocity.y * delta;
+
+          // Ground collision detection
+          // Set groundRaycaster origin to player's feet (approx.) and direction downwards
+          groundRaycaster.ray.origin.copy(controls.getObject().position);
+          groundRaycaster.ray.origin.y -= 1.6; // Player height is 1.6, ray starts from base of player
+          groundRaycaster.ray.direction.set(0, -1, 0); // Directly downwards
+
+          const intersections = groundRaycaster.intersectObjects(scene.children); // Check all objects in scene
+
+          let onGroundThisFrame = false;
+          for (let i = 0; i < intersections.length; i++) {
+            // Check if the intersection is with the ground or an obstacle
+            if (intersections[i].object.geometry.type === "PlaneGeometry" || obstacles.includes(intersections[i].object)) {
+              const hitDistance = intersections[i].distance;
+              // If falling and hit something close to the feet
+              if (velocity.y < 0 && hitDistance <= 0.1) {
+                // 0.1 is a small threshold for "on ground"
+                controls.getObject().position.y = intersections[i].point.y + 1.6; // Snap to top of obstacle/ground
+                velocity.y = 0; // Stop vertical movement
+                onGroundThisFrame = true;
+                canJump = true; // Allow jumping again
+              }
+            }
+          }
+
+          // If no ground hit detected, and player is below ground level, snap to ground
+          // This is a fallback for when groundRaycaster might miss thin ground/obstacles
+          if (!onGroundThisFrame && controls.getObject().position.y < 1.6) {
+            controls.getObject().position.y = 1.6; // Keep player above ground level
+            velocity.y = 0;
+            canJump = true;
+          } else if (controls.getObject().position.y > 1.6 && velocity.y === 0) {
+            // If player somehow got above 1.6 and is not jumping, apply gravity again
+            canJump = false; // If off ground, cannot jump until landing
+          }
+
+          // Simple horizontal collision with obstacles
+          // Create a bounding box for the player
+          const playerBox = new THREE.Box3().setFromObject(controls.getObject());
+          const playerMin = playerBox.min;
+          const playerMax = playerBox.max;
+
+          // Iteratively check for collisions and resolve
+          obstacles.forEach((obstacle) => {
+            const obstacleBox = new THREE.Box3().setFromObject(obstacle);
+            if (playerBox.intersectsBox(obstacleBox)) {
+              // Collision detected, resolve by pushing player out
+              // Determine overlap on each axis
+              const overlapX = Math.max(0, Math.min(playerMax.x, obstacleBox.max.x) - Math.max(playerMin.x, obstacleBox.min.x));
+              const overlapY = Math.max(0, Math.min(playerMax.y, obstacleBox.max.y) - Math.max(playerMin.y, obstacleBox.min.y));
+              const overlapZ = Math.max(0, Math.min(playerMax.z, obstacleBox.max.z) - Math.max(playerMin.z, obstacleBox.min.z));
+
+              // Find the axis with the smallest overlap
+              if (overlapX < overlapY && overlapX < overlapZ) {
+                if (playerBox.max.x > obstacleBox.min.x && playerBox.min.x < obstacleBox.min.x) {
+                  controls.getObject().position.x -= overlapX; // Push left
+                } else {
+                  controls.getObject().position.x += overlapX; // Push right
+                }
+              } else if (overlapZ < overlapY && overlapZ < overlapX) {
+                if (playerBox.max.z > obstacleBox.min.z && playerBox.min.z < obstacleBox.min.z) {
+                  controls.getObject().position.z -= overlapZ; // Push backward
+                } else {
+                  controls.getObject().position.z += overlapZ; // Push forward
+                }
+              }
+              // For vertical collision, it's handled by gravity/jump.
+              // If player is trying to move into an obstacle vertically, stop vertical movement
+              if (controls.getObject().position.y < obstacle.position.y + obstacle.geometry.parameters.height / 2 + 0.1 && controls.getObject().position.y > obstacle.position.y - obstacle.geometry.parameters.height / 2 - 0.1) {
+                // This rough check ensures player doesn't stick to side walls mid-air
+              }
+            }
+          });
+
+          prevTime = time; // Update previous time for next frame
+        }
+
+        renderer.render(scene, camera); // Render the scene from the camera's perspective
+      }
+
+      /**
+       * Displays a message box to the user.
+       * @param {string} message The message to display.
+       */
+      function showMessageBox(message) {
+        messageBox.textContent = message;
+        messageBox.style.display = "block";
+      }
+
+      // Start the game when the window loads
+      window.onload = function () {
+        init();
+        overlay.addEventListener("click", () => {
+          controls.lock(); // Lock pointer when overlay is clicked
+        });
+        messageBox.addEventListener("click", () => {
+          if (!isGameActive) {
+            messageBox.style.display = "none";
+            controls.lock(); // Lock pointer to start game
+            createEnemies(50); // Reset enemies to 50
+            createObstacles(20); // Reset obstacles
+          }
+        });
+      };
+    </script>
+  </body>
+</html>

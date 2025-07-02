@@ -6,6 +6,8 @@
     <title>AK47 Shooting Game</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <!-- Thêm Tone.js cho âm thanh -->
     <style>
       body {
         margin: 0;
@@ -16,7 +18,9 @@
       canvas {
         display: block;
       }
+      #game-menu,
       #overlay {
+        /* Combined for initial display */
         position: absolute;
         top: 0;
         left: 0;
@@ -32,6 +36,25 @@
         flex-direction: column;
         cursor: pointer;
         z-index: 1000;
+      }
+      #game-menu button {
+        background-color: #4caf50; /* Green */
+        border: none;
+        color: white;
+        padding: 15px 32px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 1.5em;
+        margin: 10px;
+        cursor: pointer;
+        border-radius: 8px;
+        transition: background-color 0.3s ease;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      }
+      #game-menu button:hover {
+        background-color: #45a049;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
       }
       #message-box {
         position: absolute;
@@ -76,12 +99,15 @@
     </style>
   </head>
   <body>
-    <div id="overlay">
-      <p>Click to Play</p>
-      <p style="font-size: 0.6em">Use WASD to move, Mouse to look, Left Click to Shoot, Space to Jump</p>
+    <div id="game-menu">
+      <p>Chọn Chế Độ Chơi</p>
+      <button id="mode-50">50 Bots</button>
+      <button id="mode-100">100 Bots</button>
+      <button id="mode-1000">1000 Bots</button>
+      <button id="ai-tips-button">✨ Lời khuyên Chiến thuật</button>
     </div>
     <div id="message-box"></div>
-    <div id="hud">Enemies Remaining: <span id="enemies-count">50</span></div>
+    <div id="hud">Enemies Remaining: <span id="enemies-count">0</span></div>
     <div id="crosshair"></div>
 
     <script>
@@ -115,26 +141,41 @@
       let obstacles = []; // Array to hold obstacle meshes
       let groundRaycaster; // Used for detecting ground collision (gravity/jumping)
       let shootRaycaster; // Used for detecting hits when shooting
-      let enemiesToShoot = 50; // Counter for remaining enemies
-      let isGameActive = false; // Flag to control game state
+      let enemiesToShoot = 0; // Counter for remaining enemies, initialized to 0
+      let gameState = "MENU"; // Current game state: 'MENU', 'PLAYING', 'GAME_OVER'
 
       // Movement variables
       let moveForward = false;
       let moveBackward = false;
       let moveLeft = false;
       let moveRight = false;
+      let isCrouching = false; // New: for crouching
       let canJump = false; // Flag to check if player can jump
       let velocity = new THREE.Vector3(); // Player's current velocity
       const moveSpeed = 5.75; // Player movement speed in m/s
       const jumpHeight = 10; // Initial upward velocity for jump
       const gravity = -9.8 * 10; // Gravity strength (multiplied for faster fall)
       let prevTime = performance.now(); // For delta time calculation
+      let animationFrameId; // To store the requestAnimationFrame ID for pausing/resuming
 
-      const overlay = document.getElementById("overlay");
+      const playerStandHeight = 1.6; // Normal player height (camera level)
+      const playerCrouchHeight = 1.0; // Crouched player height (camera level)
+      let currentPlayerTargetY = playerStandHeight; // Target Y position for camera
+      const playerCollisionWidth = 1; // Approximate player width for collision
+      const playerCollisionDepth = 1; // Approximate player depth for collision
+
+      // Sound variables
+      let gunSound; // Tone.js synth for gun sound
+
+      // Fragment variables for explosion effect
+      let activeFragments = []; // Array to hold active fragments
+
+      const gameMenu = document.getElementById("game-menu");
       const messageBox = document.getElementById("message-box");
       const enemiesCountSpan = document.getElementById("enemies-count");
       const hud = document.getElementById("hud");
       const crosshair = document.getElementById("crosshair");
+      const aiTipsButton = document.getElementById("ai-tips-button"); // New: AI Tips button
 
       // Initialises the Three.js scene, camera, renderer, and game elements
       function init() {
@@ -144,7 +185,7 @@
 
         // Camera: Defines the player's perspective (Field of View, Aspect Ratio, Near, Far clipping planes)
         camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 1.6, 0); // Player height
+        camera.position.set(0, playerStandHeight, 0); // Player height
 
         // Renderer: Renders the scene onto the canvas
         renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -170,36 +211,54 @@
         // Create the AK47 gun model
         createGun();
 
-        // Create 50 enemies
-        createEnemies(50);
-
-        // Create obstacles
-        createObstacles(20); // Create 20 wooden boxes
-
         // PointerLockControls: Enables first-person camera movement based on mouse
         controls = new THREE.PointerLockControls(camera, document.body);
         scene.add(controls.getObject()); // The controls object contains the camera (yawObject actually)
 
         // Event listener for locking/unlocking the pointer
         controls.addEventListener("lock", function () {
-          overlay.style.display = "none"; // Hide instructions when locked
-          hud.style.display = "block"; // Show HUD
-          crosshair.style.display = "block"; // Show crosshair
-          isGameActive = true;
-          prevTime = performance.now(); // Reset time for movement calculation
+          if (gameState === "MENU" || gameState === "GAME_OVER") {
+            // Can transition to PLAYING from MENU or GAME_OVER
+            gameState = "PLAYING";
+            gameMenu.style.display = "none"; // Hide menu
+            hud.style.display = "block"; // Show HUD
+            crosshair.style.display = "block"; // Show crosshair
+            prevTime = performance.now(); // Reset time for movement calculation
+            animate(); // Start the animation loop when locked
+          }
         });
         controls.addEventListener("unlock", function () {
-          overlay.style.display = "flex"; // Show instructions when unlocked
+          // When unlocked, always return to menu state
+          gameState = "MENU";
           hud.style.display = "none"; // Hide HUD
           crosshair.style.display = "none"; // Hide crosshair
-          isGameActive = false;
+          cancelAnimationFrame(animationFrameId); // Pause animation loop
+          Tone.Transport.pause(); // Pause audio transport
+          gameMenu.style.display = "flex"; // Show menu
         });
 
         // Raycaster for ground collision (short range, downwards)
-        groundRaycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, 1.7); // Origin, direction, near, far. Far set slightly more than player height for ground check.
+        groundRaycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, playerStandHeight / 2 + 0.1); // Initial far based on stand height
 
         // Raycaster for shooting (long range, from camera)
         shootRaycaster = new THREE.Raycaster();
+
+        // Initialize Tone.js context and gun sound
+        Tone.start(); // Start the Tone.js audio context
+        // Refined MetalSynth parameters for a more realistic gunshot sound
+        gunSound = new Tone.MetalSynth({
+          frequency: 150, // Slightly lower frequency for a deeper impact
+          envelope: {
+            attack: 0.005, // Very fast attack
+            decay: 0.1, // Short decay
+            sustain: 0.0, // No sustain
+            release: 0.05, // Quick release
+          },
+          harmonicity: 5.0, // Increased harmonicity for a harsher, more complex sound
+          modulationIndex: 10, // Moderate modulation for a "crack"
+          resonance: 2000, // Moderate resonance
+          octaves: 0.5, // Reduced octaves for a tighter sound
+        }).toDestination(); // Connect to speakers
 
         // Event listener for shooting (mouse click)
         document.addEventListener("click", onDocumentClick, false);
@@ -208,10 +267,56 @@
         document.addEventListener("keydown", onKeyDown, false);
         document.addEventListener("keyup", onKeyUp, false);
 
+        // Menu button listeners
+        document.getElementById("mode-50").addEventListener("click", () => startGame(50));
+        document.getElementById("mode-100").addEventListener("click", () => startGame(100));
+        document.getElementById("mode-1000").addEventListener("click", () => startGame(1000));
+        aiTipsButton.addEventListener("click", getAITips); // New: AI Tips button listener
+
         // Handle window resizing
         window.addEventListener("resize", onWindowResize, false);
 
-        animate(); // Start the animation loop
+        // Handle tab visibility change
+        document.addEventListener("visibilitychange", onVisibilityChange);
+      }
+
+      /**
+       * Handles visibility change of the document (tab switching).
+       */
+      function onVisibilityChange() {
+        if (document.hidden) {
+          // Tab is hidden, pause the game
+          if (gameState === "PLAYING") {
+            cancelAnimationFrame(animationFrameId); // Stop the animation loop
+            Tone.Transport.pause(); // Pause audio transport
+          }
+        } else {
+          // Tab is visible, resume the game
+          if (gameState === "PLAYING") {
+            prevTime = performance.now(); // Reset prevTime to avoid large delta on resume
+            animate(); // Resume the animation loop
+            Tone.Transport.start(); // Resume audio transport
+          }
+        }
+      }
+
+      /**
+       * Starts the game with a specified number of enemies.
+       * @param {number} numEnemies The number of enemies for the game mode.
+       */
+      function startGame(numEnemies) {
+        enemiesToShoot = numEnemies;
+        createEnemies(enemiesToShoot);
+        createObstacles(20); // Always reset obstacles
+        messageBox.style.display = "none"; // Hide any previous messages
+        gameMenu.style.display = "none"; // Ensure menu is hidden
+        controls.lock(); // Lock pointer to start game
+        // gameState will be set to 'PLAYING' by the 'lock' event listener
+        // Reset player position to center for new game
+        controls.getObject().position.set(0, playerStandHeight, 0);
+        velocity.set(0, 0, 0); // Reset player velocity
+        isCrouching = false; // Ensure player starts standing
+        currentPlayerTargetY = playerStandHeight; // Reset target height
       }
 
       /**
@@ -265,18 +370,25 @@
         // Clear existing enemies and reset count
         enemies.forEach((enemy) => scene.remove(enemy)); // Remove existing enemies from scene
         enemies = [];
-        enemiesToShoot = count;
-        enemiesCountSpan.textContent = enemiesToShoot;
+        enemiesCountSpan.textContent = count; // Update HUD with initial count
 
         const enemyMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 }); // Red color for enemies
+
+        // Adjust spawning range based on enemy count for better distribution
+        let spawnRange = 100; // Default for 50 bots
+        if (count === 100) {
+          spawnRange = 120;
+        } else if (count === 1000) {
+          spawnRange = 180; // Larger range for 1000 bots
+        }
 
         for (let i = 0; i < count; i++) {
           const enemyGeometry = new THREE.BoxGeometry(2, 2, 2);
           const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
 
-          // Randomly position enemies within a reasonable range, avoiding spawning too close to origin
-          enemy.position.x = Math.random() * 180 - 90; // Expanded range for 50 enemies
-          enemy.position.z = Math.random() * 180 - 90; // Expanded range for 50 enemies
+          // Randomly position enemies within the calculated range, avoiding spawning too close to origin
+          enemy.position.x = Math.random() * spawnRange * 2 - spawnRange;
+          enemy.position.z = Math.random() * spawnRange * 2 - spawnRange;
           // Ensure enemies are not too close to the player's starting position (0,0)
           if (Math.abs(enemy.position.x) < 10 && Math.abs(enemy.position.z) < 10) {
             enemy.position.x += 20; // Push further if too close
@@ -319,11 +431,22 @@
       }
 
       /**
-       * Handles key down events for movement and jumping.
+       * Handles key down events for movement, jumping, and crouching.
        * @param {KeyboardEvent} event The keyboard event.
        */
       function onKeyDown(event) {
-        if (!isGameActive) return; // Only process input if game is active
+        if (gameState !== "PLAYING") {
+          // If not playing, only F1 is handled to return to menu from message box
+          if (event.code === "F1") {
+            if (gameState === "GAME_OVER" || messageBox.style.display === "block") {
+              // If game over or tips are shown
+              messageBox.style.display = "none";
+              gameMenu.style.display = "flex";
+              gameState = "MENU";
+            }
+          }
+          return; // Do not process other keys if not playing
+        }
 
         switch (event.code) {
           case "KeyW":
@@ -344,15 +467,28 @@
               canJump = false; // Cannot jump again until landing
             }
             break;
+          case "ControlLeft":
+          case "ControlRight":
+            if (!isCrouching) {
+              isCrouching = true;
+              currentPlayerTargetY = playerCrouchHeight;
+            }
+            break;
+          case "F1":
+            // Pause the game and return to menu
+            gameState = "MENU"; // Set state to MENU
+            controls.unlock(); // This will trigger the unlock event listener
+            showMessageBox("Game tạm dừng.\n\n(Chọn chế độ chơi mới)"); // Show pause message
+            break;
         }
       }
 
       /**
-       * Handles key up events for movement.
+       * Handles key up events for movement and crouching.
        * @param {KeyboardEvent} event The keyboard event.
        */
       function onKeyUp(event) {
-        if (!isGameActive) return; // Only process input if game is active
+        if (gameState !== "PLAYING") return; // Only process input if playing
 
         switch (event.code) {
           case "KeyW":
@@ -367,6 +503,41 @@
           case "KeyD":
             moveRight = false;
             break;
+          case "ControlLeft":
+          case "ControlRight":
+            if (isCrouching) {
+              isCrouching = false;
+              currentPlayerTargetY = playerStandHeight;
+            }
+            break;
+        }
+      }
+
+      /**
+       * Creates a shatter effect at the given position with the specified color.
+       * @param {THREE.Vector3} position The position where the shatter effect should occur.
+       * @param {THREE.Color} color The color of the fragments.
+       */
+      function createShatterEffect(position, color) {
+        const fragmentCount = 15; // Number of fragments
+        const fragmentSize = 0.3; // Size of each fragment
+        const fragmentMaterial = new THREE.MeshPhongMaterial({ color: color, transparent: true, opacity: 1 });
+
+        for (let i = 0; i < fragmentCount; i++) {
+          const fragmentGeometry = new THREE.BoxGeometry(fragmentSize, fragmentSize, fragmentSize);
+          const fragment = new THREE.Mesh(fragmentGeometry, fragmentMaterial.clone()); // Clone material for individual opacity
+          fragment.position.copy(position);
+
+          // Give random velocity to push fragments outwards
+          const velocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 10, // x velocity
+            (Math.random() - 0.5) * 10 + 5, // y velocity (slightly upwards bias for explosion)
+            (Math.random() - 0.5) * 10 // z velocity
+          );
+          // Store velocity, lifetime, and fade speed in userData for animation
+          fragment.userData = { velocity: velocity, lifetime: 1.0, fadeSpeed: 0.8 }; // Increased fadeSpeed for faster disappearance
+          activeFragments.push(fragment);
+          scene.add(fragment);
         }
       }
 
@@ -376,7 +547,10 @@
        * If an enemy is hit, it is removed from the scene and the count is updated.
        */
       function onDocumentClick(event) {
-        if (controls.isLocked === true && isGameActive) {
+        if (gameState === "PLAYING" && controls.isLocked === true) {
+          // Play gun sound
+          gunSound.triggerAttackRelease("C4", "8n", Tone.now()); // Fixed: explicitly set start time
+
           // Set the shootRaycaster to shoot from the center of the camera's view
           // The Vector2(0, 0) represents the center of the screen in normalized device coordinates
           shootRaycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
@@ -388,6 +562,9 @@
           if (intersects.length > 0) {
             // An enemy was hit!
             const hitEnemy = intersects[0].object;
+
+            // Create shatter effect at enemy's position
+            createShatterEffect(hitEnemy.position, hitEnemy.material.color);
 
             // Remove the hit enemy from the scene
             scene.remove(hitEnemy);
@@ -403,17 +580,50 @@
 
             if (enemiesToShoot === 0) {
               // All enemies shot, game won!
-              showMessageBox("You Win! All enemies eliminated. Click to restart.");
-              isGameActive = false;
-              controls.unlock(); // Unlock pointer to allow restart click
+              showMessageBox("You Win! All enemies eliminated!");
+              controls.unlock(); // Unlock pointer, which triggers unlock listener and returns to menu
             }
           }
-        } else if (!isGameActive && (event.target.id === "message-box" || event.target.id === "overlay")) {
-          // If game is not active and user clicks on overlay or message box, restart the game
+        } else if (gameState === "MENU" && (event.target.id === "message-box" || event.target.id === "game-menu")) {
+          // If in menu state and user clicks on message box (e.g., after tips), hide message and show menu
           messageBox.style.display = "none";
-          controls.lock(); // Lock pointer to start game
-          createEnemies(50); // Reset enemies to 50
-          createObstacles(20); // Reset obstacles
+          gameMenu.style.display = "flex";
+        }
+      }
+
+      /**
+       * Fetches tactical tips from the Gemini API and displays them.
+       */
+      async function getAITips() {
+        if (gameState !== "MENU" && gameState !== "GAME_OVER") return; // Only allow tips from menu/game over screen
+
+        showMessageBox("Đang tải lời khuyên chiến thuật..."); // Show loading message
+        gameMenu.style.display = "none"; // Hide menu while loading
+
+        const prompt = "Generate 3 short, actionable tips for a first-person shooter game where the player shoots red cube enemies in an environment with wooden box obstacles. Focus on movement, aiming, and strategy. Each tip should be concise.";
+        let chatHistory = [];
+        chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+        const payload = { contents: chatHistory };
+        const apiKey = ""; // Leave this as-is, Canvas will provide it at runtime.
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+        try {
+          const response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const result = await response.json();
+
+          if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+            const text = result.candidates[0].content.parts[0].text;
+            showMessageBox("Lời khuyên Chiến thuật:\n\n" + text + "\n\n(Nhấp để quay lại menu)");
+          } else {
+            showMessageBox("Không thể tải lời khuyên chiến thuật. Vui lòng thử lại.\n\n(Nhấp để quay lại menu)");
+          }
+        } catch (error) {
+          console.error("Lỗi khi gọi Gemini API:", error);
+          showMessageBox("Đã xảy ra lỗi khi tải lời khuyên. Vui lòng thử lại.\n\n(Nhấp để quay lại menu)");
         }
       }
 
@@ -431,11 +641,17 @@
        * This function is called repeatedly to render frames and update game logic.
        */
       function animate() {
-        requestAnimationFrame(animate); // Request the next frame
+        // Store the ID to cancel it if needed (e.g., when tab is hidden)
+        animationFrameId = requestAnimationFrame(animate);
 
-        if (isGameActive) {
+        if (gameState === "PLAYING") {
           const time = performance.now();
           const delta = (time - prevTime) / 1000; // Time since last frame in seconds
+
+          // Smoothly update player height (camera Y position) based on crouching state
+          controls.getObject().position.y = THREE.MathUtils.lerp(controls.getObject().position.y, currentPlayerTargetY, 0.1);
+          // The actual height of the player's collision box will depend on whether they are standing or crouching.
+          const actualPlayerCollisionHeight = isCrouching ? playerCrouchHeight : playerStandHeight;
 
           // Apply friction to horizontal velocity
           velocity.x -= velocity.x * 10.0 * delta;
@@ -444,86 +660,91 @@
           // Apply gravity to vertical velocity
           velocity.y += gravity * delta;
 
-          // Determine movement direction based on key presses
-          // Using Vector3 to add movement relative to camera's orientation
-          if (moveForward) controls.getObject().translateZ(-moveSpeed * delta);
-          if (moveBackward) controls.getObject().translateZ(moveSpeed * delta);
-          if (moveLeft) controls.getObject().translateX(-moveSpeed * delta);
-          if (moveRight) controls.getObject().translateX(moveSpeed * delta);
+          // Calculate desired movement vector
+          const desiredMove = new THREE.Vector3();
+          if (moveForward) desiredMove.z -= moveSpeed * delta;
+          if (moveBackward) desiredMove.z += moveSpeed * delta;
+          if (moveLeft) desiredMove.x -= moveSpeed * delta;
+          if (moveRight) desiredMove.x += moveSpeed * delta;
+
+          // Apply rotation to desired movement vector
+          desiredMove.applyQuaternion(controls.getObject().quaternion);
+
+          // Store current position for collision rollback
+          const oldPlayerPosition = controls.getObject().position.clone();
+
+          // Apply horizontal movement
+          controls.getObject().position.x += desiredMove.x;
+          controls.getObject().position.z += desiredMove.z;
+
+          // Simple horizontal collision with obstacles (stop if collide)
+          // Create player's collision box based on current camera position and actual player height
+          const playerCollisionBox = new THREE.Box3().setFromCenterAndSize(
+            new THREE.Vector3(
+              controls.getObject().position.x,
+              controls.getObject().position.y - actualPlayerCollisionHeight / 2, // Center Y of the collision box
+              controls.getObject().position.z
+            ),
+            new THREE.Vector3(playerCollisionWidth, actualPlayerCollisionHeight, playerCollisionDepth)
+          );
+
+          for (let i = 0; i < obstacles.length; i++) {
+            const obstacleBox = new THREE.Box3().setFromObject(obstacles[i]);
+            if (playerCollisionBox.intersectsBox(obstacleBox)) {
+              // If collision, revert to old horizontal position
+              controls.getObject().position.x = oldPlayerPosition.x;
+              controls.getObject().position.z = oldPlayerPosition.z;
+              break; // Only revert once per frame
+            }
+          }
 
           // Apply vertical velocity (jump/fall)
           controls.getObject().position.y += velocity.y * delta;
 
-          // Ground collision detection
-          // Set groundRaycaster origin to player's feet (approx.) and direction downwards
+          // Ground collision detection for vertical movement
+          // Ray origin at base of player, direction downwards
           groundRaycaster.ray.origin.copy(controls.getObject().position);
-          groundRaycaster.ray.origin.y -= 1.6; // Player height is 1.6, ray starts from base of player
-          groundRaycaster.ray.direction.set(0, -1, 0); // Directly downwards
+          groundRaycaster.ray.origin.y -= actualPlayerCollisionHeight / 2; // Ray starts from base of player's current height
+          groundRaycaster.far = actualPlayerCollisionHeight / 2 + 0.1; // Ray length to check for ground
 
-          const intersections = groundRaycaster.intersectObjects(scene.children); // Check all objects in scene
+          const intersections = groundRaycaster.intersectObjects(scene.children);
 
           let onGroundThisFrame = false;
-          for (let i = 0; i < intersections.length; i++) {
-            // Check if the intersection is with the ground or an obstacle
-            if (intersections[i].object.geometry.type === "PlaneGeometry" || obstacles.includes(intersections[i].object)) {
-              const hitDistance = intersections[i].distance;
-              // If falling and hit something close to the feet
-              if (velocity.y < 0 && hitDistance <= 0.1) {
-                // 0.1 is a small threshold for "on ground"
-                controls.getObject().position.y = intersections[i].point.y + 1.6; // Snap to top of obstacle/ground
-                velocity.y = 0; // Stop vertical movement
+          if (intersections.length > 0) {
+            const minIntersection = intersections.reduce((min, current) => (current.distance < min.distance ? current : min));
+            if (minIntersection.object.geometry.type === "PlaneGeometry" || obstacles.includes(minIntersection.object)) {
+              if (velocity.y < 0) {
+                // Only snap if falling
+                controls.getObject().position.y = minIntersection.point.y + actualPlayerCollisionHeight / 2; // Snap to top of obstacle/ground
+                velocity.y = 0;
                 onGroundThisFrame = true;
-                canJump = true; // Allow jumping again
+                canJump = true;
               }
             }
           }
 
-          // If no ground hit detected, and player is below ground level, snap to ground
-          // This is a fallback for when groundRaycaster might miss thin ground/obstacles
-          if (!onGroundThisFrame && controls.getObject().position.y < 1.6) {
-            controls.getObject().position.y = 1.6; // Keep player above ground level
+          // Fallback to snap to ground if somehow below expected level
+          if (!onGroundThisFrame && controls.getObject().position.y < actualPlayerCollisionHeight / 2) {
+            controls.getObject().position.y = actualPlayerCollisionHeight / 2;
             velocity.y = 0;
             canJump = true;
-          } else if (controls.getObject().position.y > 1.6 && velocity.y === 0) {
-            // If player somehow got above 1.6 and is not jumping, apply gravity again
-            canJump = false; // If off ground, cannot jump until landing
+          } else if (controls.getObject().position.y > actualPlayerCollisionHeight / 2 && velocity.y === 0) {
+            canJump = false; // If off ground and not moving vertically, cannot jump
           }
 
-          // Simple horizontal collision with obstacles
-          // Create a bounding box for the player
-          const playerBox = new THREE.Box3().setFromObject(controls.getObject());
-          const playerMin = playerBox.min;
-          const playerMax = playerBox.max;
+          // Update fragments for explosion effect
+          activeFragments.forEach((fragment, index) => {
+            // Apply gravity to fragment velocity (slightly less than player gravity)
+            fragment.userData.velocity.y += gravity * delta * 0.5;
+            fragment.position.add(fragment.userData.velocity.clone().multiplyScalar(delta));
 
-          // Iteratively check for collisions and resolve
-          obstacles.forEach((obstacle) => {
-            const obstacleBox = new THREE.Box3().setFromObject(obstacle);
-            if (playerBox.intersectsBox(obstacleBox)) {
-              // Collision detected, resolve by pushing player out
-              // Determine overlap on each axis
-              const overlapX = Math.max(0, Math.min(playerMax.x, obstacleBox.max.x) - Math.max(playerMin.x, obstacleBox.min.x));
-              const overlapY = Math.max(0, Math.min(playerMax.y, obstacleBox.max.y) - Math.max(playerMin.y, obstacleBox.min.y));
-              const overlapZ = Math.max(0, Math.min(playerMax.z, obstacleBox.max.z) - Math.max(playerMin.z, obstacleBox.min.z));
-
-              // Find the axis with the smallest overlap
-              if (overlapX < overlapY && overlapX < overlapZ) {
-                if (playerBox.max.x > obstacleBox.min.x && playerBox.min.x < obstacleBox.min.x) {
-                  controls.getObject().position.x -= overlapX; // Push left
-                } else {
-                  controls.getObject().position.x += overlapX; // Push right
-                }
-              } else if (overlapZ < overlapY && overlapZ < overlapX) {
-                if (playerBox.max.z > obstacleBox.min.z && playerBox.min.z < obstacleBox.min.z) {
-                  controls.getObject().position.z -= overlapZ; // Push backward
-                } else {
-                  controls.getObject().position.z += overlapZ; // Push forward
-                }
-              }
-              // For vertical collision, it's handled by gravity/jump.
-              // If player is trying to move into an obstacle vertically, stop vertical movement
-              if (controls.getObject().position.y < obstacle.position.y + obstacle.geometry.parameters.height / 2 + 0.1 && controls.getObject().position.y > obstacle.position.y - obstacle.geometry.parameters.height / 2 - 0.1) {
-                // This rough check ensures player doesn't stick to side walls mid-air
-              }
+            // Fade out fragments
+            fragment.userData.lifetime -= fragment.userData.fadeSpeed * delta;
+            if (fragment.userData.lifetime <= 0) {
+              scene.remove(fragment);
+              activeFragments.splice(index, 1); // Remove from array if faded out
+            } else {
+              fragment.material.opacity = fragment.userData.lifetime;
             }
           });
 
@@ -538,22 +759,25 @@
        * @param {string} message The message to display.
        */
       function showMessageBox(message) {
-        messageBox.textContent = message;
+        messageBox.innerHTML = message.replace(/\n/g, "<br>"); // Replace newlines with <br> for HTML display
         messageBox.style.display = "block";
       }
 
       // Start the game when the window loads
       window.onload = function () {
         init();
-        overlay.addEventListener("click", () => {
-          controls.lock(); // Lock pointer when overlay is clicked
-        });
+        // Initially show the game menu
+        gameMenu.style.display = "flex";
+        hud.style.display = "none";
+        crosshair.style.display = "none";
+
+        // Handle clicks on message box to return to menu
         messageBox.addEventListener("click", () => {
-          if (!isGameActive) {
+          // If message box is shown (e.g., after game over or tips), clicking it returns to menu
+          if (messageBox.style.display === "block") {
             messageBox.style.display = "none";
-            controls.lock(); // Lock pointer to start game
-            createEnemies(50); // Reset enemies to 50
-            createObstacles(20); // Reset obstacles
+            gameMenu.style.display = "flex";
+            gameState = "MENU";
           }
         });
       };
